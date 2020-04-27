@@ -326,6 +326,7 @@ extension StravaClient {
                     multipartFormData.append(value.data(using: .utf8)!, withName: key)
                 }
             }
+            print(multipartFormData)
         }, usingThreshold: SessionManager.multipartFormDataEncodingMemoryThreshold, with: url) { encodingResult in
             switch encodingResult {
             case .success(let upload, _, _):
