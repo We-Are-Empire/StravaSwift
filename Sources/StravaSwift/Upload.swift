@@ -56,9 +56,7 @@ public struct UploadData {
         params["data_type"] = dataType.rawValue
         params["name"] = name
         params["description"] = description
-        if let `private` = `private` {
-            params["private"] = (`private` as NSNumber).stringValue
-        }
+       
         if let trainer = trainer {
             params["trainer"] = (trainer as NSNumber).stringValue
         }
