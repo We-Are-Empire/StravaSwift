@@ -130,7 +130,7 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
      - Returns: a boolean that indicates if this url is for Strava, has a code and can be handled properly
      **/
     public func handleAuthorizationRedirect(_ url: URL) -> Bool {
-        if let redirectUri = config?.redirectUri, url.absoluteString.starts(with: redirectUri),
+           if let redirectUri = config?.redirectUri.components(separatedBy: "%3A%2F%2F").joined(separator: "://"), url.absoluteString.starts(with: redirectUri),
            let params = url.getQueryParameters(), params["code"] != nil, params["scope"] != nil, params["state"] == "ios" {
 
             self.handleAuthorizationRedirect(url) { result in
