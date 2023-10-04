@@ -53,6 +53,7 @@ public struct UploadData {
     internal var params: [String: Any] {
 
         var params: [String: Any] = [:]
+        
         params["data_type"] = dataType.rawValue
         params["name"] = name
         params["description"] = description
@@ -61,6 +62,9 @@ public struct UploadData {
         }
         if let trainer = trainer {
             params["trainer"] = (trainer as NSNumber).stringValue
+        }
+        if let activityType = activityType {
+            params["sport_type"] = activityType.rawValue
         }
         params["external_id"] = externalId
         return params

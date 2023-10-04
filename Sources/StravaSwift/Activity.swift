@@ -72,7 +72,7 @@ public final class Activity: Strava {
     public let hasHeartRate : Bool?
     public let averageHeartRate : Double?
     public let maxHeartRate : Double?
-
+    public let sportType: ActivityType?
 
     /**
      Initializer
@@ -130,6 +130,7 @@ public final class Activity: Strava {
         hasHeartRate = json["has_heartrate"].bool
         averageHeartRate = json["average_heartrate"].double
         maxHeartRate = json["max_heartrate"].double
+        sportType = json["sport_type"].strava(ActivityType.self)
     }
 }
 
