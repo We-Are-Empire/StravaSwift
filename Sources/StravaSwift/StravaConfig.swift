@@ -9,7 +9,7 @@
 /**
   OAuth scope
  */
-public enum Scope: String {
+public enum Scope: String, Codable {
     /** Default: Read public segments, public routes, public profile data, public posts, public events, club feeds, and leaderboards **/
     case read = "read"
     /** Read private routes, private segments, and private events for the user **/

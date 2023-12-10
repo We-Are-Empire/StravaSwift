@@ -30,6 +30,3 @@ public struct Achievement: Strava {
         rank = json["rank"].int
     }
 }
-
-
-//Test commit

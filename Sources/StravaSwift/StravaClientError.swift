@@ -22,4 +22,10 @@ public enum StravaClientError: Error {
      Uknown error
     **/
     case unknown
+    
+    case openStravaFailed
+    case noWriteScope
+    case invalidRedirectURI
+    case tokenRetrievalFailed
+    case runtimeError(String)
 }

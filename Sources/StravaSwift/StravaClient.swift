@@ -15,6 +15,12 @@ import SafariServices
 /**
  StravaClient responsible for making all api requests
 */
+
+public struct StravaSwiftAuth {
+    public var token: OAuthToken
+    public var scopes: [Scope]
+}
+
 open class StravaClient: NSObject {
 
     /**
@@ -28,6 +34,9 @@ open class StravaClient: NSObject {
     public typealias AuthorizationHandler = (Swift.Result<OAuthToken, Error>) -> ()
     fileprivate var currentAuthorizationHandler: AuthorizationHandler?
     fileprivate var authSession: NSObject?  // Holds a reference to ASWebAuthenticationSession / SFAuthenticationSession depending on iOS version
+    
+    
+    var continuation: CheckedContinuation<URL, Never>?
 
     /**
       The OAuthToken returned by the delegate
@@ -81,7 +90,182 @@ extension StravaClient {
     }
 }
 
-//MARK : - Auth
+//MARK: - Auth Async ( + Dean's additions)
+
+extension StravaClient {
+    
+    @MainActor
+    public func authorize() async throws -> StravaSwiftAuth {
+        
+        let appAuthorizationUrl = Router.appAuthorizationUrl
+        
+        var authURL: URL?
+        
+        if UIApplication.shared.canOpenURL(appAuthorizationUrl) {
+            
+            let didOpen = await UIApplication.shared.open(appAuthorizationUrl, options: [:])
+            
+            print("DID OPEN STRAVA:", didOpen)
+            
+            if !didOpen {
+                throw StravaClientError.openStravaFailed
+            }
+            
+            authURL = await withCheckedContinuation { continuation in
+                self.continuation = continuation
+            }
+        }
+        else {
+            authURL = try await withCheckedThrowingContinuation { continuation in
+                
+                let webAuthenticationSession = ASWebAuthenticationSession(url: Router.webAuthorizationUrl,
+                                                                          callbackURLScheme: config?.redirectUri,
+                                                                          completionHandler: { (url, error) in
+                    
+                    if let url = url, error == nil {
+                        continuation.resume(returning: url)
+                    } else {
+                        if let error = error {
+                            continuation.resume(throwing: error)
+                            return
+                        }
+                        else {
+                            continuation.resume(throwing: StravaClientError.runtimeError("Web authentication unknown error"))
+                            return
+                        }
+                    }
+                })
+                
+                webAuthenticationSession.presentationContextProvider = self
+                webAuthenticationSession.start()
+            }
+        }
+        
+        guard let authURL = authURL, redirectURLIsValid(authURL) else {
+            throw StravaClientError.invalidRedirectURI
+        }
+        
+        //MARK: Token
+        guard let token = await getAccessToken(from: authURL) else {
+            throw StravaClientError.tokenRetrievalFailed
+        }
+        
+        self.config?.delegate.set(token)
+        
+        //MARK: Scopes
+        let scopes = self.getScopes(from: authURL)
+        
+        return StravaSwiftAuth(token: token, scopes: scopes)
+    }
+    
+    @MainActor
+    public func handleAuthURL(_ url: URL) {
+        self.continuation?.resume(returning: url)
+    }
+    
+    func getAccessToken(from url: URL) async -> OAuthToken? {
+        
+        guard let code = url.getQueryParameters()?["code"] else { return nil }
+        
+        do {
+            return try await getAccessToken(code)
+        }
+        catch {
+            return nil
+        }
+    }
+    
+    private func getAccessToken(_ code: String) async throws -> OAuthToken {
+        
+        let token = try await withCheckedThrowingContinuation { continuation in
+            do {
+                let request = try oauthRequest(Router.token(code: code))
+                
+                request?.responseStrava { (response: DataResponse<OAuthToken>) in
+                    switch response.result {
+                    case .success(let token):
+                        continuation.resume(returning: token)
+                    case .failure(let error):
+                        // Assuming error is of a type that can be thrown
+                        continuation.resume(throwing: error)
+                    }
+                }
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+        
+        return token
+    }
+    
+    private func getScopes(from url: URL) -> [Scope] {
+        
+        guard let encodedScopes = url.getQueryParameters()?["scope"], let decodedScopes = encodedScopes.removingPercentEncoding else {
+            return []
+        }
+        
+        let parts = decodedScopes.split(separator: ",").map(String.init)
+        var scopeStrings = [String]()
+        var currentScope = ""
+        
+        for part in parts {
+            if part.contains(":") {
+                // Found a new scope, so save it for appending permissions
+                currentScope = part
+                scopeStrings.append(part)
+            } else {
+                // This is a permission for the last found scope
+                if !currentScope.isEmpty {
+                    let newScope = "\(currentScope.split(separator: ":")[0]):\(part)"
+                    scopeStrings.append(newScope)
+                }
+            }
+        }
+        
+        let scopes = scopeStrings.compactMap { Scope(rawValue: $0) }
+        print(scopes)
+        
+        return scopes
+    }
+    
+    
+    @MainActor
+    public func refreshToken(_ refreshToken: String) async throws -> OAuthToken {
+        
+        let token = try await withCheckedThrowingContinuation { continuation in
+            
+            do {
+                let request = try oauthRequest(Router.refresh(refreshToken: refreshToken))
+                
+                request?.responseStrava { (response: DataResponse<OAuthToken>) in
+                    
+                    if let token = response.result.value, token.accessToken != nil {
+                        print("Alegedly this is a token:", token)
+                        continuation.resume(returning: token)
+                        
+                        return
+                    }
+                    else {
+                        if let error = response.error {
+                            continuation.resume(throwing: error)
+                            return
+                        }
+                        else {
+                            continuation.resume(throwing: StravaClientError.tokenRetrievalFailed)
+                        }
+                    }
+                }
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+        
+        return token
+    }
+}
+
+
+//MARK: - Auth
 
 extension StravaClient: ASWebAuthenticationPresentationContextProviding {
 
@@ -91,6 +275,7 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
     /**
      Starts the Strava OAuth authorization. The authentication will use the Strava app be default if it is installed on the device. If the user does not have Strava installed, it will fallback on `SFAuthenticationSession` or `ASWebAuthenticationSession` depending on the iOS version used at runtime.
      */
+    
     public func authorize(result: @escaping AuthorizationHandler) {
         let appAuthorizationUrl = Router.appAuthorizationUrl
         if UIApplication.shared.canOpenURL(appAuthorizationUrl) {
@@ -129,9 +314,33 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
      - Parameter url the url returned by Strava through the (ASWeb/SF)AuthenricationSession or application open options.
      - Returns: a boolean that indicates if this url is for Strava, has a code and can be handled properly
      **/
+    
+    public func redirectURLIsValid(_ url: URL) -> Bool {
+        if let params = url.getQueryParameters(), params["code"] != nil, params["scope"] != nil, params["state"] == "ios" {
+            return true
+        }
+        else {
+            print("url is invalid:", url)
+            return false
+        }
+    }
+    
+    
+//    public func redirectURLIsValid(_ url: URL) -> Bool {
+//        if let redirectUri = config?.redirectUri.components(separatedBy: "%3A%2F%2F").joined(separator: "://"), url.absoluteString.starts(with: redirectUri),
+//           let params = url.getQueryParameters(), params["code"] != nil, params["scope"] != nil, params["state"] == "ios" {
+//            return true
+//        }
+//        else {
+//            print("url is invalid:", url)
+//            return false
+//        }
+//    }
+    
+    
     public func handleAuthorizationRedirect(_ url: URL) -> Bool {
-           if let redirectUri = config?.redirectUri.components(separatedBy: "%3A%2F%2F").joined(separator: "://"), url.absoluteString.starts(with: redirectUri),
-           let params = url.getQueryParameters(), params["code"] != nil, params["scope"] != nil, params["state"] == "ios" {
+           
+        if redirectURLIsValid(url) {
 
             self.handleAuthorizationRedirect(url) { result in
                 if let currentAuthorizationHandler = self.currentAuthorizationHandler {
@@ -152,6 +361,7 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
      - Parameter result a closure to handle the OAuthToken
      **/
     private func handleAuthorizationRedirect(_ url: URL, result: @escaping AuthorizationHandler) {
+        
         if let code = url.getQueryParameters()?["code"] {
             self.getAccessToken(code, result: result)
         } else {
@@ -202,7 +412,7 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
 
     // ASWebAuthenticationPresentationContextProviding
 
-    @available(iOS 12.0, *)
+//    @available(iOS 12.0, *)
     public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         return currentWindow ?? ASPresentationAnchor()
     }
