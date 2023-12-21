@@ -34,6 +34,7 @@ public final class Athlete: Strava, Codable {
     public let datePreference: String?
     public let measurementPreference: Units?
     public let email: String?
+    public let username: String?
     public let FTP: Int?
     public let weight: Double?
     public let clubs: [Club]?
@@ -47,6 +48,9 @@ public final class Athlete: Strava, Codable {
      - Internal
      **/
     required public init(_ json: JSON) {
+        
+        print(json)
+        
         id = json["id"].int
         resourceState = json["resource_state"].strava(ResourceState.self)
         city = json["city"].string
@@ -68,6 +72,7 @@ public final class Athlete: Strava, Codable {
         datePreference = json["date_preference"].string
         measurementPreference = json["measurement_preference"].strava(Units.self)
         email = json["email"].string
+        username = json["username"].string
         FTP = json["ftp"].int
         weight = json["weight"].double
         clubs = json["clubs"].strava(Club.self)

@@ -105,8 +105,6 @@ extension StravaClient {
             
             let didOpen = await UIApplication.shared.open(appAuthorizationUrl, options: [:])
             
-            print("DID OPEN STRAVA:", didOpen)
-            
             if !didOpen {
                 throw StravaClientError.openStravaFailed
             }
@@ -417,6 +415,30 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
         return currentWindow ?? ASPresentationAnchor()
     }
 }
+
+
+//MARK: - Athlete Async
+
+extension StravaClient {
+    
+    public func getAthlete() async throws -> Athlete? {
+        
+        let athlete = try await withCheckedThrowingContinuation { continuation in
+            
+            request(Router.athlete, result: { (athlete: Athlete?) in
+                
+                continuation.resume(returning: athlete)
+                
+            }, failure: { (error: NSError) in
+                continuation.resume(throwing: error)
+            })
+        }
+        
+        return athlete
+    }
+}
+
+
 
 
 //MARK: - Athlete
