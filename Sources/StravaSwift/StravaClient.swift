@@ -17,6 +17,12 @@ import SafariServices
 */
 
 public struct StravaSwiftAuth {
+    
+    public init(token: OAuthToken, scopes: [Scope]) {
+        self.token = token
+        self.scopes = scopes
+    }
+    
     public var token: OAuthToken
     public var scopes: [Scope]
 }
@@ -94,6 +100,11 @@ extension StravaClient {
 
 extension StravaClient {
     
+    public func setConfigToken(oauthToken: OAuthToken) {
+        self.config?.delegate.set(oauthToken)
+    }
+    
+    
     @MainActor
     public func authorize() async throws -> StravaSwiftAuth {
         
@@ -122,6 +133,8 @@ extension StravaClient {
                     
                     if let url = url, error == nil {
                         continuation.resume(returning: url)
+                        return
+                        
                     } else {
                         if let error = error {
                             continuation.resume(throwing: error)
@@ -183,13 +196,17 @@ extension StravaClient {
                     switch response.result {
                     case .success(let token):
                         continuation.resume(returning: token)
+                        return
+                        
                     case .failure(let error):
                         // Assuming error is of a type that can be thrown
                         continuation.resume(throwing: error)
+                        return
                     }
                 }
             } catch {
                 continuation.resume(throwing: error)
+                return
             }
         }
         
@@ -238,6 +255,7 @@ extension StravaClient {
                 request?.responseStrava { (response: DataResponse<OAuthToken>) in
                     
                     if let token = response.result.value, token.accessToken != nil {
+                        self.config?.delegate.set(token)
                         print("Alegedly this is a token:", token)
                         continuation.resume(returning: token)
                         
@@ -250,11 +268,13 @@ extension StravaClient {
                         }
                         else {
                             continuation.resume(throwing: StravaClientError.tokenRetrievalFailed)
+                            return
                         }
                     }
                 }
             } catch {
                 continuation.resume(throwing: error)
+                return
             }
         }
         
@@ -428,9 +448,11 @@ extension StravaClient {
             request(Router.athlete, result: { (athlete: Athlete?) in
                 
                 continuation.resume(returning: athlete)
+                return
                 
             }, failure: { (error: NSError) in
                 continuation.resume(throwing: error)
+                return
             })
         }
         
