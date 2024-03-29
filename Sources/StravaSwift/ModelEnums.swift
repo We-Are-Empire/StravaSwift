@@ -128,7 +128,7 @@ public enum WorkoutType: Int, Codable {
   - Workout
   - Yoga
  **/
-public enum ActivityType: String {
+public enum ActivityType: String, Codable {
     case alpineSki = "AlpineSki"
     case backcountrySki = "BackcountrySki"
     case canoeing = "Canoeing"
