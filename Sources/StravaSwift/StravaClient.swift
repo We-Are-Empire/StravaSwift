@@ -446,7 +446,9 @@ extension StravaClient {
         let athlete = try await withCheckedThrowingContinuation { continuation in
             
             request(Router.athlete, result: { (athlete: Athlete?) in
-                
+                for bike in athlete?.bikes ?? [] {
+                    print("Got bikes? Bike ID:", bike.id)
+                }
                 continuation.resume(returning: athlete)
                 return
                 
@@ -457,6 +459,35 @@ extension StravaClient {
         }
         
         return athlete
+    }
+    
+    public func getBikesForAthlete(athlete: Athlete) async throws -> [Bike] {
+        
+        guard let bikes = athlete.bikes else { return [] }
+        
+        var tempBikes: [Bike] = []
+        
+        for bike in bikes {
+            
+            guard let bikeID = bike.id else { continue }
+            
+            let detailedBike: Bike? = try await withCheckedThrowingContinuation { continuation in
+                request(Router.gear(id: bikeID), result: { (bike: Bike?) in
+                    continuation.resume(returning: bike)
+                    return
+                      
+                }, failure: { (error: NSError) in
+                    continuation.resume(throwing: error)
+                    return
+                })
+            }
+            
+            if let detailedBike {
+                tempBikes.append(detailedBike)
+            }
+        }
+        
+        return tempBikes
     }
 }
 
@@ -490,6 +521,16 @@ extension StravaClient {
     public func request<T: Strava>(_ route: Router, result: @escaping (((T)?) -> Void), failure: @escaping (NSError) -> Void) {
         do {
             try oauthRequest(route)?.responseStrava { (response: DataResponse<T>) in
+                
+//                if let data = response.data {
+//                    do {
+//                        let json = try JSONSerialization.jsonObject(with: data, options: .mutableContainers)
+//                        print("Raw JSON response: \(json)")
+//                    } catch {
+//                        print("Failed to decode JSON: \(error)")
+//                    }
+//                }
+                
                 // HTTP Status codes above 400 are errors
                 if let statusCode = response.response?.statusCode, (400..<500).contains(statusCode) {
                     failure(self.generateError(failureReason: "Strava API Error", response: response.response))

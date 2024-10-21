@@ -209,10 +209,15 @@ public enum ClubType: String, Codable {
  - TimeTrial
  **/
 public enum FrameType: Int, Codable {
-    case mtb = 1
+    case mountain = 1
     case cross = 2
     case road = 3
     case timeTrial = 4
+    case gravel = 5
+    case eBike = 6
+    case track = 7
+    case recumbent = 8
+    case tandem = 9
 }
 
 /**

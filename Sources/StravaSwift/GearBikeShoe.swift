@@ -15,7 +15,7 @@ import SwiftyJSON
 open class Gear: Strava, Codable {
     public let id: String?
     public let primary: Bool?
-    public let name: String?
+    public let nickname: String?
     public let description: String?
     public let resourceState: ResourceState?
     public let distance: Double?
@@ -26,7 +26,7 @@ open class Gear: Strava, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(String.self, forKey: .id)
         primary = try container.decodeIfPresent(Bool.self, forKey: .primary)
-        name = try container.decodeIfPresent(String.self, forKey: .name)
+        nickname = try container.decodeIfPresent(String.self, forKey: .nickname)
         description = try container.decodeIfPresent(String.self, forKey: .description)
         resourceState = try container.decodeIfPresent(ResourceState.self, forKey: .resourceState)
         distance = try container.decodeIfPresent(Double.self, forKey: .distance)
@@ -38,7 +38,7 @@ open class Gear: Strava, Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
         try container.encode(primary, forKey: .primary)
-        try container.encode(name, forKey: .name)
+        try container.encode(nickname, forKey: .nickname)
         try container.encode(description, forKey: .description)
         try container.encode(resourceState, forKey: .resourceState)
         try container.encode(distance, forKey: .distance)
@@ -49,7 +49,7 @@ open class Gear: Strava, Codable {
     required public init(_ json: JSON) {
         id = json["id"].string
         primary = json["primary"].bool
-        name = json["name"].string
+        nickname = json["nickname"].string
         description = json["description"].string
         resourceState = json["resource_state"].strava(ResourceState.self)
         distance = json["distance"].double
@@ -58,7 +58,7 @@ open class Gear: Strava, Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, primary, name, description, resourceState, distance, brandName, modelName
+        case id, primary, nickname, description, resourceState, distance, brandName, modelName
     }
 }
 
@@ -72,26 +72,32 @@ public final class Shoe: Gear {}
  Bike represents a... bike!  The object is returned in summary or detailed representations.
  **/
 public final class Bike: Gear {
+    
     public let frameType: FrameType?
+    public let weight: Double?
 
     required public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         frameType = try container.decodeIfPresent(FrameType.self, forKey: .frameType)
+        weight = try container.decodeIfPresent(Double.self, forKey: .weight)
         try super.init(from: decoder)
     }
 
     public override func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(frameType, forKey: .frameType)
+        try container.encode(weight, forKey: .weight)
         try super.encode(to: encoder)
     }
 
     required public init(_ json: JSON) {
         frameType = json["frame_type"].strava(FrameType.self)
+        weight = json["weight"].double
         super.init(json)
     }
 
     private enum CodingKeys: String, CodingKey {
         case frameType
+        case weight
     }
 }

@@ -269,7 +269,7 @@ public enum Router {
 
      - parameter id: the gear id
      **/
-    case gear(id: Id, params: Params)
+    case gear(id: String)
 
     /**
      Retrieves a segment
@@ -544,8 +544,8 @@ extension Router {
         case .segmentEfforts(let id, let params):
             return ("/segment_efforts/\(id)", params, .get)
 
-        case .gear(let id, let params):
-            return ("/gear/\(id)", params, .get)
+        case .gear(let id):
+            return ("/gear/\(id)", nil, .get)
 
         case .routes(let id):
             return ("/routes/\(id)", nil, .get)
