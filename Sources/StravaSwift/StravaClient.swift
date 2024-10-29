@@ -441,14 +441,14 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
 
 extension StravaClient {
     
-    public func getAthlete() async throws -> Athlete? {
+    public func getAthlete() async throws -> Athlete {
         
         let athlete = try await withCheckedThrowingContinuation { continuation in
             
             request(Router.athlete, result: { (athlete: Athlete?) in
-                for bike in athlete?.bikes ?? [] {
-                    print("Got bikes? Bike ID:", bike.id)
-                }
+//                for bike in athlete?.bikes ?? [] {
+//                    print("Got bikes? Bike ID:", bike.id)
+//                }
                 continuation.resume(returning: athlete)
                 return
                 
@@ -458,7 +458,12 @@ extension StravaClient {
             })
         }
         
-        return athlete
+        if let athlete {
+            return athlete
+        }
+        else {
+            throw self.generateError(failureReason: "Athlete not found", response: nil)
+        }
     }
     
     public func getBikesForAthlete(athlete: Athlete) async throws -> [Bike] {
@@ -497,6 +502,45 @@ extension StravaClient {
 //MARK: - Athlete
 
 extension StravaClient {
+    
+    public func uploadAsync(_ upload: UploadData) async throws -> UploadStatus {
+        return try await withCheckedThrowingContinuation { continuation in
+            self.upload(Router.uploadFile(upload: upload), upload: upload) { (status: UploadStatus?) in
+                if let status = status {
+                    continuation.resume(returning: status)
+                } else {
+                    continuation.resume(throwing: self.generateError(failureReason: "Strava API Error", response: nil))
+                }
+            } failure: { error in
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+    
+    public func checkUploadStatusAsync(_ uploadId: Int) async throws -> UploadStatus {
+        return try await withCheckedThrowingContinuation { continuation in
+            self.request(Router.uploads(id: uploadId)) { (status: UploadStatus?) in
+                if let status = status {
+                    continuation.resume(returning: status)
+                } else {
+                    continuation.resume(throwing: self.generateError(failureReason: "Strava API Error", response: nil))
+                }
+            } failure: { error in
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+    
+    public func deauthorizeAsync(accessToken: String) async throws {
+        return try await withCheckedThrowingContinuation { continuation in
+            self.request(Router.deauthorize(accessToken: accessToken)) { (result: OAuthToken?) in
+                // Successful deauthorization
+                continuation.resume()
+            } failure: { error in
+                continuation.resume(throwing: error)
+            }
+        }
+    }
 
     public func upload<T: Strava>(_ route: Router, upload: UploadData, result: @escaping (((T)?) -> Void), failure: @escaping (NSError) -> Void) {
         do {
