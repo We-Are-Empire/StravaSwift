@@ -21,7 +21,7 @@ public struct OAuthToken: Strava, Codable {
     public let refreshToken: String?
 
     /** Expiry for the token in seconds since the epoch **/
-    public let expiresAt : Int?
+    public let expiresAt : Date?
 
     /** The athlete **/
     public let athlete: Athlete?
@@ -34,11 +34,16 @@ public struct OAuthToken: Strava, Codable {
     public init(_ json: JSON) {
         accessToken = json["access_token"].string
         refreshToken = json["refresh_token"].string
-        expiresAt = json["expires_at"].int
+        if let intExpiry = json["expires_at"].int {
+            expiresAt = Date(timeIntervalSince1970: TimeInterval(intExpiry))
+        }
+        else {
+            expiresAt = nil
+        }
         athlete = Athlete(json["athlete"])
     }
 
-    public init(access: String?, refresh: String?, expiry: Int?) {
+    public init(access: String?, refresh: String?, expiry: Date?) {
         self.accessToken = access
         self.refreshToken = refresh
         self.expiresAt = expiry

@@ -6,23 +6,23 @@
 //  Copyright © 2015 Matthew Clarkson. All rights reserved.
 //
 
+import Alamofire
 import AuthenticationServices
 import Foundation
-import Alamofire
-import SwiftyJSON
 import SafariServices
+import SwiftyJSON
 
 /**
  StravaClient responsible for making all api requests
 */
 
-public struct StravaSwiftAuth {
-    
+public struct StravaSwiftAuth: Codable {
+
     public init(token: OAuthToken, scopes: [Scope]) {
         self.token = token
         self.scopes = scopes
     }
-    
+
     public var token: OAuthToken
     public var scopes: [Scope]
 }
@@ -37,43 +37,59 @@ open class StravaClient: NSObject {
     fileprivate override init() {}
     fileprivate var config: StravaConfig?
 
-    public typealias AuthorizationHandler = (Swift.Result<OAuthToken, Error>) -> ()
+    public typealias AuthorizationHandler = (Swift.Result<OAuthToken, Error>) -> Void
     fileprivate var currentAuthorizationHandler: AuthorizationHandler?
     fileprivate var authSession: NSObject?  // Holds a reference to ASWebAuthenticationSession / SFAuthenticationSession depending on iOS version
-    
-    
+
+    private var currentAuth: StravaSwiftAuth?
+
+    /// Public read-only access to the current token
+    public var token: OAuthToken? {
+        return currentAuth?.token
+    }
+
+    /// Updates the client's authentication state
+    public func setAuth(_ auth: StravaSwiftAuth) {
+        self.currentAuth = auth
+    }
+
+    /// Clears the current authentication state
+    public func clearAuth() {
+        self.currentAuth = nil
+    }
+
     var continuation: CheckedContinuation<URL, Never>?
 
     /**
       The OAuthToken returned by the delegate
      **/
-    open var token:  OAuthToken? { return config?.delegate.get() }
+    // open var token:  OAuthToken? { return config?.delegate.get() }
 
     internal var authParams: [String: Any] {
         return [
-            "client_id" : config?.clientId ?? 0,
-            "redirect_uri" : config?.redirectUri ?? "",
-            "scope" : (config?.scopes ?? []).map { $0.rawValue }.joined(separator: ","),
-            "state" : "ios" as AnyObject,
-            "approval_prompt" : config?.forcePrompt ?? true ? "force" : "auto",
-            "response_type" : "code"
+            "client_id": config?.clientId ?? 0,
+            "redirect_uri": config?.redirectUri ?? "",
+            "scope": (config?.scopes ?? []).map { $0.rawValue }.joined(separator: ","),
+            "state": "ios" as AnyObject,
+            "approval_prompt": config?.forcePrompt ?? true ? "force" : "auto",
+            "response_type": "code",
         ]
     }
 
-    internal func tokenParams(_ code: String) -> [String: Any]  {
+    internal func tokenParams(_ code: String) -> [String: Any] {
         return [
-            "client_id" : config?.clientId ?? 0,
-            "client_secret" : config?.clientSecret ?? "",
-            "code" : code
+            "client_id": config?.clientId ?? 0,
+            "client_secret": config?.clientSecret ?? "",
+            "code": code,
         ]
     }
 
-    internal func refreshParams(_ refreshToken: String) -> [String: Any]  {
+    internal func refreshParams(_ refreshToken: String) -> [String: Any] {
         return [
-            "client_id" : config?.clientId ?? 0,
-            "client_secret" : config?.clientSecret ?? "",
-            "grant_type" : "refresh_token",
-            "refresh_token" : refreshToken
+            "client_id": config?.clientId ?? 0,
+            "client_secret": config?.clientSecret ?? "",
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken,
         ]
     }
 }
@@ -99,105 +115,92 @@ extension StravaClient {
 //MARK: - Auth Async ( + Dean's additions)
 
 extension StravaClient {
-    
-    public func setConfigToken(oauthToken: OAuthToken) {
-        self.config?.delegate.set(oauthToken)
-    }
-    
-    
+
     @MainActor
     public func authorize() async throws -> StravaSwiftAuth {
-        
         let appAuthorizationUrl = Router.appAuthorizationUrl
-        
+
         var authURL: URL?
-        
+
+        // Try native app auth first
         if UIApplication.shared.canOpenURL(appAuthorizationUrl) {
-            
             let didOpen = await UIApplication.shared.open(appAuthorizationUrl, options: [:])
-            
+
             if !didOpen {
                 throw StravaClientError.openStravaFailed
             }
-            
+
             authURL = await withCheckedContinuation { continuation in
                 self.continuation = continuation
             }
         }
+        // Fall back to web auth
         else {
             authURL = try await withCheckedThrowingContinuation { continuation in
-                
-                let webAuthenticationSession = ASWebAuthenticationSession(url: Router.webAuthorizationUrl,
-                                                                          callbackURLScheme: config?.redirectUri,
-                                                                          completionHandler: { (url, error) in
-                    
+                let webAuthenticationSession = ASWebAuthenticationSession(
+                    url: Router.webAuthorizationUrl,
+                    callbackURLScheme: config?.redirectUri
+                ) { url, error in
                     if let url = url, error == nil {
                         continuation.resume(returning: url)
-                        return
-                        
+                    } else if let error = error {
+                        continuation.resume(throwing: error)
                     } else {
-                        if let error = error {
-                            continuation.resume(throwing: error)
-                            return
-                        }
-                        else {
-                            continuation.resume(throwing: StravaClientError.runtimeError("Web authentication unknown error"))
-                            return
-                        }
+                        continuation.resume(
+                            throwing: StravaClientError.runtimeError(
+                                "Web authentication unknown error"))
                     }
-                })
-                
+                }
+
                 webAuthenticationSession.presentationContextProvider = self
                 webAuthenticationSession.start()
             }
         }
-        
+
         guard let authURL = authURL, redirectURLIsValid(authURL) else {
             throw StravaClientError.invalidRedirectURI
         }
-        
-        //MARK: Token
+
+        // Get token and scopes
         guard let token = await getAccessToken(from: authURL) else {
             throw StravaClientError.tokenRetrievalFailed
         }
-        
-        self.config?.delegate.set(token)
-        
-        //MARK: Scopes
+
         let scopes = self.getScopes(from: authURL)
-        
-        return StravaSwiftAuth(token: token, scopes: scopes)
+
+        // Create and store the auth state
+        let auth = StravaSwiftAuth(token: token, scopes: scopes)
+        return auth
     }
-    
+
     @MainActor
     public func handleAuthURL(_ url: URL) {
         self.continuation?.resume(returning: url)
     }
-    
+
     func getAccessToken(from url: URL) async -> OAuthToken? {
-        
+
         guard let code = url.getQueryParameters()?["code"] else { return nil }
-        
+
         do {
             return try await getAccessToken(code)
-        }
-        catch {
+        } catch {
             return nil
         }
     }
-    
+
     private func getAccessToken(_ code: String) async throws -> OAuthToken {
-        
+
         let token = try await withCheckedThrowingContinuation { continuation in
             do {
                 let request = try oauthRequest(Router.token(code: code))
-                
+
                 request?.responseStrava { (response: DataResponse<OAuthToken>) in
                     switch response.result {
                     case .success(let token):
                         continuation.resume(returning: token)
                         return
-                        
+
                     case .failure(let error):
                         // Assuming error is of a type that can be thrown
                         continuation.resume(throwing: error)
@@ -209,64 +212,43 @@ extension StravaClient {
                 return
             }
         }
-        
+
         return token
     }
-    
+
     private func getScopes(from url: URL) -> [Scope] {
-        
-        guard let encodedScopes = url.getQueryParameters()?["scope"], let decodedScopes = encodedScopes.removingPercentEncoding else {
+        guard let encodedScopes = url.getQueryParameters()?["scope"],
+              let decodedScopes = encodedScopes.removingPercentEncoding
+        else {
             return []
         }
         
         let parts = decodedScopes.split(separator: ",").map(String.init)
-        var scopeStrings = [String]()
-        var currentScope = ""
-        
-        for part in parts {
-            if part.contains(":") {
-                // Found a new scope, so save it for appending permissions
-                currentScope = part
-                scopeStrings.append(part)
-            } else {
-                // This is a permission for the last found scope
-                if !currentScope.isEmpty {
-                    let newScope = "\(currentScope.split(separator: ":")[0]):\(part)"
-                    scopeStrings.append(newScope)
-                }
-            }
-        }
-        
-        let scopes = scopeStrings.compactMap { Scope(rawValue: $0) }
-        print(scopes)
+        let scopes = parts.compactMap { Scope(rawValue: $0) }
+        print("Parsed scopes:", scopes)
         
         return scopes
     }
-    
-    
+
     @MainActor
     public func refreshToken(_ refreshToken: String) async throws -> OAuthToken {
-        
+
         let token = try await withCheckedThrowingContinuation { continuation in
-            
+
             do {
                 let request = try oauthRequest(Router.refresh(refreshToken: refreshToken))
-                
+
                 request?.responseStrava { (response: DataResponse<OAuthToken>) in
-                    
+
                     if let token = response.result.value, token.accessToken != nil {
-                        self.config?.delegate.set(token)
-                        print("Alegedly this is a token:", token)
                         continuation.resume(returning: token)
-                        
+
                         return
-                    }
-                    else {
+                    } else {
                         if let error = response.error {
                             continuation.resume(throwing: error)
                             return
-                        }
-                        else {
+                        } else {
                             continuation.resume(throwing: StravaClientError.tokenRetrievalFailed)
                             return
                         }
@@ -277,11 +259,10 @@ extension StravaClient {
                 return
             }
         }
-        
+
         return token
     }
 }
-
 
 //MARK: - Auth
 
@@ -293,11 +274,11 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
     /**
      Starts the Strava OAuth authorization. The authentication will use the Strava app be default if it is installed on the device. If the user does not have Strava installed, it will fallback on `SFAuthenticationSession` or `ASWebAuthenticationSession` depending on the iOS version used at runtime.
      */
-    
+
     public func authorize(result: @escaping AuthorizationHandler) {
         let appAuthorizationUrl = Router.appAuthorizationUrl
         if UIApplication.shared.canOpenURL(appAuthorizationUrl) {
-            currentAuthorizationHandler = result    // Stores the handler to be executed once `handleAuthorizationRedirect(url:)` is called
+            currentAuthorizationHandler = result  // Stores the handler to be executed once `handleAuthorizationRedirect(url:)` is called
             if #available(iOS 10.0, *) {
                 UIApplication.shared.open(appAuthorizationUrl, options: [:])
             } else {
@@ -305,22 +286,23 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
             }
         } else {
             if #available(iOS 12.0, *) {
-                let webAuthenticationSession = ASWebAuthenticationSession(url: Router.webAuthorizationUrl,
-                                                                          callbackURLScheme: config?.redirectUri,
-                                                                          completionHandler: { (url, error) in
-                    if let url = url, error == nil {
-                        self.handleAuthorizationRedirect(url, result: result)
-                    } else {
-                        result(.failure(error!))
-                    }
-                })
+                let webAuthenticationSession = ASWebAuthenticationSession(
+                    url: Router.webAuthorizationUrl,
+                    callbackURLScheme: config?.redirectUri,
+                    completionHandler: { (url, error) in
+                        if let url = url, error == nil {
+                            self.handleAuthorizationRedirect(url, result: result)
+                        } else {
+                            result(.failure(error!))
+                        }
+                    })
                 authSession = webAuthenticationSession
                 if #available(iOS 13.0, *) {
                     webAuthenticationSession.presentationContextProvider = self
                 }
                 webAuthenticationSession.start()
             } else {
-                currentAuthorizationHandler = result    // Stores the handler to be executed once `handleAuthorizationRedirect(url:)` is called
+                currentAuthorizationHandler = result  // Stores the handler to be executed once `handleAuthorizationRedirect(url:)` is called
                 UIApplication.shared.open(Router.webAuthorizationUrl, options: [:])
             }
         }
@@ -332,32 +314,31 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
      - Parameter url the url returned by Strava through the (ASWeb/SF)AuthenricationSession or application open options.
      - Returns: a boolean that indicates if this url is for Strava, has a code and can be handled properly
      **/
-    
+
     public func redirectURLIsValid(_ url: URL) -> Bool {
-        if let params = url.getQueryParameters(), params["code"] != nil, params["scope"] != nil, params["state"] == "ios" {
+        if let params = url.getQueryParameters(), params["code"] != nil, params["scope"] != nil,
+            params["state"] == "ios"
+        {
             return true
-        }
-        else {
+        } else {
             print("url is invalid:", url)
             return false
         }
     }
-    
-    
-//    public func redirectURLIsValid(_ url: URL) -> Bool {
-//        if let redirectUri = config?.redirectUri.components(separatedBy: "%3A%2F%2F").joined(separator: "://"), url.absoluteString.starts(with: redirectUri),
-//           let params = url.getQueryParameters(), params["code"] != nil, params["scope"] != nil, params["state"] == "ios" {
-//            return true
-//        }
-//        else {
-//            print("url is invalid:", url)
-//            return false
-//        }
-//    }
-    
-    
+
+    //    public func redirectURLIsValid(_ url: URL) -> Bool {
+    //        if let redirectUri = config?.redirectUri.components(separatedBy: "%3A%2F%2F").joined(separator: "://"), url.absoluteString.starts(with: redirectUri),
+    //           let params = url.getQueryParameters(), params["code"] != nil, params["scope"] != nil, params["state"] == "ios" {
+    //            return true
+    //        }
+    //        else {
+    //            print("url is invalid:", url)
+    //            return false
+    //        }
+    //    }
+
     public func handleAuthorizationRedirect(_ url: URL) -> Bool {
-           
+
         if redirectURLIsValid(url) {
 
             self.handleAuthorizationRedirect(url) { result in
@@ -379,11 +360,12 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
      - Parameter result a closure to handle the OAuthToken
      **/
     private func handleAuthorizationRedirect(_ url: URL, result: @escaping AuthorizationHandler) {
-        
+
         if let code = url.getQueryParameters()?["code"] {
             self.getAccessToken(code, result: result)
         } else {
-            result(.failure(generateError(failureReason: "Invalid authorization code", response: nil)))
+            result(
+                .failure(generateError(failureReason: "Invalid authorization code", response: nil)))
         }
     }
 
@@ -395,7 +377,8 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
      **/
     private func getAccessToken(_ code: String, result: @escaping AuthorizationHandler) {
         do {
-            try oauthRequest(Router.token(code: code))?.responseStrava { [weak self] (response: DataResponse<OAuthToken>) in
+            try oauthRequest(Router.token(code: code))?.responseStrava {
+                [weak self] (response: DataResponse<OAuthToken>) in
                 guard let self = self, let token = response.result.value else { return }
                 //let token = response.result.value!
                 self.config?.delegate.set(token)
@@ -414,13 +397,16 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
      **/
     public func refreshAccessToken(_ refreshToken: String, result: @escaping AuthorizationHandler) {
         do {
-            try oauthRequest(Router.refresh(refreshToken: refreshToken))?.responseStrava { [weak self] (response: DataResponse<OAuthToken>) in
+            try oauthRequest(Router.refresh(refreshToken: refreshToken))?.responseStrava {
+                [weak self] (response: DataResponse<OAuthToken>) in
                 guard let self = self else { return }
                 if let token = response.result.value {
                     self.config?.delegate.set(token)
                     result(.success(token))
                 } else {
-                    result(.failure(self.generateError(failureReason: "No valid token", response: nil)))
+                    result(
+                        .failure(self.generateError(failureReason: "No valid token", response: nil))
+                    )
                 }
             }
         } catch let error as NSError {
@@ -430,109 +416,116 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
 
     // ASWebAuthenticationPresentationContextProviding
 
-//    @available(iOS 12.0, *)
-    public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+    //    @available(iOS 12.0, *)
+    public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor
+    {
         return currentWindow ?? ASPresentationAnchor()
     }
 }
 
-
 //MARK: - Athlete Async
 
 extension StravaClient {
-    
+
     public func getAthlete() async throws -> Athlete {
-        
+
         let athlete = try await withCheckedThrowingContinuation { continuation in
-            
-            request(Router.athlete, result: { (athlete: Athlete?) in
-//                for bike in athlete?.bikes ?? [] {
-//                    print("Got bikes? Bike ID:", bike.id)
-//                }
-                continuation.resume(returning: athlete)
-                return
-                
-            }, failure: { (error: NSError) in
-                continuation.resume(throwing: error)
-                return
-            })
-        }
-        
-        if let athlete {
-            return athlete
-        }
-        else {
-            throw self.generateError(failureReason: "Athlete not found", response: nil)
-        }
-    }
-    
-    public func getBikesForAthlete(athlete: Athlete) async throws -> [Bike] {
-        
-        guard let bikes = athlete.bikes else { return [] }
-        
-        var tempBikes: [Bike] = []
-        
-        for bike in bikes {
-            
-            guard let bikeID = bike.id else { continue }
-            
-            let detailedBike: Bike? = try await withCheckedThrowingContinuation { continuation in
-                request(Router.gear(id: bikeID), result: { (bike: Bike?) in
-                    continuation.resume(returning: bike)
+
+            request(
+                Router.athlete,
+                result: { (athlete: Athlete?) in
+                    //                for bike in athlete?.bikes ?? [] {
+                    //                    print("Got bikes? Bike ID:", bike.id)
+                    //                }
+                    continuation.resume(returning: athlete)
                     return
-                      
-                }, failure: { (error: NSError) in
+
+                },
+                failure: { (error: NSError) in
                     continuation.resume(throwing: error)
                     return
                 })
+        }
+
+        if let athlete {
+            return athlete
+        } else {
+            throw self.generateError(failureReason: "Athlete not found", response: nil)
+        }
+    }
+
+    public func getBikesForAthlete(athlete: Athlete) async throws -> [Bike] {
+
+        guard let bikes = athlete.bikes else { return [] }
+
+        var tempBikes: [Bike] = []
+
+        for bike in bikes {
+
+            guard let bikeID = bike.id else { continue }
+
+            let detailedBike: Bike? = try await withCheckedThrowingContinuation { continuation in
+                request(
+                    Router.gear(id: bikeID),
+                    result: { (bike: Bike?) in
+                        continuation.resume(returning: bike)
+                        return
+
+                    },
+                    failure: { (error: NSError) in
+                        continuation.resume(throwing: error)
+                        return
+                    })
             }
-            
+
             if let detailedBike {
                 tempBikes.append(detailedBike)
             }
         }
-        
+
         return tempBikes
     }
 }
 
-
-
-
 //MARK: - Athlete
 
 extension StravaClient {
-    
+
     public func uploadAsync(_ upload: UploadData) async throws -> UploadStatus {
         return try await withCheckedThrowingContinuation { continuation in
-            self.upload(Router.uploadFile(upload: upload), upload: upload) { (status: UploadStatus?) in
+            self.upload(Router.uploadFile(upload: upload), upload: upload) {
+                (status: UploadStatus?) in
                 if let status = status {
                     continuation.resume(returning: status)
                 } else {
-                    continuation.resume(throwing: self.generateError(failureReason: "Strava API Error", response: nil))
+                    continuation.resume(
+                        throwing: self.generateError(
+                            failureReason: "Strava API Error", response: nil))
                 }
             } failure: { error in
                 continuation.resume(throwing: error)
             }
         }
     }
-    
+
     public func checkUploadStatusAsync(_ uploadId: Int) async throws -> UploadStatus {
         return try await withCheckedThrowingContinuation { continuation in
             self.request(Router.uploads(id: uploadId)) { (status: UploadStatus?) in
                 if let status = status {
                     continuation.resume(returning: status)
                 } else {
-                    continuation.resume(throwing: self.generateError(failureReason: "Strava API Error", response: nil))
+                    continuation.resume(
+                        throwing: self.generateError(
+                            failureReason: "Strava API Error", response: nil))
                 }
             } failure: { error in
                 continuation.resume(throwing: error)
             }
         }
     }
-    
+
     public func deauthorizeAsync(accessToken: String) async throws {
-        return try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { continuation in
             self.request(Router.deauthorize(accessToken: accessToken)) { (result: OAuthToken?) in
                 // Successful deauthorization
                 continuation.resume()
@@ -542,11 +535,18 @@ extension StravaClient {
         }
     }
 
-    public func upload<T: Strava>(_ route: Router, upload: UploadData, result: @escaping (((T)?) -> Void), failure: @escaping (NSError) -> Void) {
+    public func upload<T: Strava>(
+        _ route: Router, upload: UploadData, result: @escaping (((T)?) -> Void),
+        failure: @escaping (NSError) -> Void
+    ) {
         do {
-            try oauthUpload(URLRequest: route.asURLRequest(), upload: upload) { (response: DataResponse<T>) in
-                if let statusCode = response.response?.statusCode, (400..<500).contains(statusCode) {
-                    failure(self.generateError(failureReason: "Strava API Error", response: response.response))
+            try oauthUpload(URLRequest: route.asURLRequest(), upload: upload) {
+                (response: DataResponse<T>) in
+                if let statusCode = response.response?.statusCode, (400..<500).contains(statusCode)
+                {
+                    failure(
+                        self.generateError(
+                            failureReason: "Strava API Error", response: response.response))
                 } else {
                     result(response.result.value)
                 }
@@ -562,22 +562,27 @@ extension StravaClient {
      - Parameter route: a Router enum case which may require parameters
      - Parameter result: a closure to handle the returned object
      **/
-    public func request<T: Strava>(_ route: Router, result: @escaping (((T)?) -> Void), failure: @escaping (NSError) -> Void) {
+    public func request<T: Strava>(
+        _ route: Router, result: @escaping (((T)?) -> Void), failure: @escaping (NSError) -> Void
+    ) {
         do {
             try oauthRequest(route)?.responseStrava { (response: DataResponse<T>) in
-                
-//                if let data = response.data {
-//                    do {
-//                        let json = try JSONSerialization.jsonObject(with: data, options: .mutableContainers)
-//                        print("Raw JSON response: \(json)")
-//                    } catch {
-//                        print("Failed to decode JSON: \(error)")
-//                    }
-//                }
-                
+
+                //                if let data = response.data {
+                //                    do {
+                //                        let json = try JSONSerialization.jsonObject(with: data, options: .mutableContainers)
+                //                        print("Raw JSON response: \(json)")
+                //                    } catch {
+                //                        print("Failed to decode JSON: \(error)")
+                //                    }
+                //                }
+
                 // HTTP Status codes above 400 are errors
-                if let statusCode = response.response?.statusCode, (400..<500).contains(statusCode) {
-                    failure(self.generateError(failureReason: "Strava API Error", response: response.response))
+                if let statusCode = response.response?.statusCode, (400..<500).contains(statusCode)
+                {
+                    failure(
+                        self.generateError(
+                            failureReason: "Strava API Error", response: response.response))
                 } else {
                     result(response.result.value)
                 }
@@ -593,12 +598,17 @@ extension StravaClient {
      - Parameter route: a Router enum case which may require parameters
      - Parameter result: a closure to handle the returned objects
      **/
-    public func request<T: Strava>(_ route: Router, result: @escaping ((([T])?) -> Void), failure: @escaping (NSError) -> Void) {
+    public func request<T: Strava>(
+        _ route: Router, result: @escaping ((([T])?) -> Void), failure: @escaping (NSError) -> Void
+    ) {
         do {
             try oauthRequest(route)?.responseStravaArray { (response: DataResponse<[T]>) in
                 // HTTP Status codes above 400 are errors
-                if let statusCode = response.response?.statusCode, (400..<500).contains(statusCode) {
-                    failure(self.generateError(failureReason: "Strava API Error", response: response.response))
+                if let statusCode = response.response?.statusCode, (400..<500).contains(statusCode)
+                {
+                    failure(
+                        self.generateError(
+                            failureReason: "Strava API Error", response: response.response))
                 } else {
                     result(response.result.value)
                 }
@@ -637,19 +647,27 @@ extension StravaClient {
         return Alamofire.request(urlRequest)
     }
 
-    fileprivate func oauthUpload<T: Strava>(URLRequest: URLRequestConvertible, upload: UploadData, completion: @escaping (DataResponse<T>) -> ()) {
+    fileprivate func oauthUpload<T: Strava>(
+        URLRequest: URLRequestConvertible, upload: UploadData,
+        completion: @escaping (DataResponse<T>) -> Void
+    ) {
         checkConfiguration()
 
         guard let url = try? URLRequest.asURLRequest() else { return }
 
-        Alamofire.upload(multipartFormData: { multipartFormData in
-            multipartFormData.append(upload.file, withName: "file", fileName: "\(upload.name ?? "default").\(upload.dataType)", mimeType: "octet/stream")
-            for (key, value) in upload.params {
-                if let value = value as? String {
-                    multipartFormData.append(value.data(using: .utf8)!, withName: key)
+        Alamofire.upload(
+            multipartFormData: { multipartFormData in
+                multipartFormData.append(
+                    upload.file, withName: "file",
+                    fileName: "\(upload.name ?? "default").\(upload.dataType)",
+                    mimeType: "octet/stream")
+                for (key, value) in upload.params {
+                    if let value = value as? String {
+                        multipartFormData.append(value.data(using: .utf8)!, withName: key)
+                    }
                 }
-            }
-        }, usingThreshold: SessionManager.multipartFormDataEncodingMemoryThreshold, with: url) { encodingResult in
+            }, usingThreshold: SessionManager.multipartFormDataEncodingMemoryThreshold, with: url
+        ) { encodingResult in
             switch encodingResult {
             case .success(let upload, _, _):
                 upload.responseStrava { (response: DataResponse<T>) in
