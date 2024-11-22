@@ -58,7 +58,7 @@ open class StravaClient: NSObject {
         self.currentAuth = nil
     }
 
-    var continuation: CheckedContinuation<URL, Never>?
+    var authContinuation: CheckedContinuation<URL, Never>?
 
     /**
       The OAuthToken returned by the delegate
@@ -131,7 +131,7 @@ extension StravaClient {
             }
 
             authURL = await withCheckedContinuation { continuation in
-                self.continuation = continuation
+                self.authContinuation = continuation
             }
         }
         // Fall back to web auth
@@ -175,7 +175,7 @@ extension StravaClient {
 
     @MainActor
     public func handleAuthURL(_ url: URL) {
-        self.continuation?.resume(returning: url)
+        self.authContinuation?.resume(returning: url)
     }
 
     func getAccessToken(from url: URL) async -> OAuthToken? {
