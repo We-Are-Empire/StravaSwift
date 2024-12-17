@@ -225,7 +225,7 @@ extension StravaClient {
         
         let parts = decodedScopes.split(separator: ",").map(String.init)
         let scopes = parts.compactMap { Scope(rawValue: $0) }
-        print("Parsed scopes:", scopes)
+//        print("Parsed scopes:", scopes)
         
         return scopes
     }

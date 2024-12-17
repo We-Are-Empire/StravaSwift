@@ -48,9 +48,6 @@ public final class Athlete: Strava, Codable {
      - Internal
      **/
     required public init(_ json: JSON) {
-        
-        print(json)
-        
         id = json["id"].int
         resourceState = json["resource_state"].strava(ResourceState.self)
         city = json["city"].string
