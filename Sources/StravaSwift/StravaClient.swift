@@ -115,6 +115,118 @@ extension StravaClient {
 //MARK: - Auth Async ( + Dean's additions)
 
 extension StravaClient {
+    
+    // --- MODIFIED Authorization Flow ---
+    
+    /**
+     Initiates the Strava OAuth flow (via app or web) and returns the authorization code and granted scopes upon successful user authorization and redirect.
+     
+     This method does NOT exchange the code for a token. That step must be handled separately using the returned code, typically by calling a secure backend endpoint.
+     
+     - Returns: A tuple containing the authorization `code` and the array of granted `scopes`.
+     - Throws: Errors related to configuration, opening the Strava app/web view, user cancellation, or invalid redirect URIs.
+     */
+    @MainActor
+    public func authorizeForCode() async throws -> (code: String, scopes: [Scope]) {
+        checkConfiguration() // Ensure config is set
+        
+        let appAuthorizationUrl = Router.appAuthorizationUrl
+        var redirectURL: URL? // Changed name for clarity
+        
+        print("StravaClient: Starting authorization flow...")
+        
+        // Try native app auth first
+        if UIApplication.shared.canOpenURL(appAuthorizationUrl) {
+            print("StravaClient: Attempting to open Strava app...")
+            let didOpen = await UIApplication.shared.open(appAuthorizationUrl, options: [:])
+            
+            if !didOpen {
+                print("StravaClient: Failed to open Strava app.")
+                throw StravaClientError.openStravaFailed
+            }
+            
+            // Wait for the app delegate/scene delegate to call handleAuthURL, which resumes this continuation
+            print("StravaClient: Waiting for redirect URL from app delegate...")
+            redirectURL = await withCheckedContinuation { continuation in
+                self.authContinuation = continuation // Store the continuation
+            }
+            print("StravaClient: Received redirect URL via continuation: \(redirectURL?.absoluteString ?? "nil")")
+        }
+        // Fall back to web auth
+        else {
+            print("StravaClient: Strava app not installed or cannot be opened. Falling back to web authentication...")
+            redirectURL = try await withCheckedThrowingContinuation { continuation in
+                // Ensure redirectUri from config is valid
+                guard let callbackScheme = config?.redirectUri.components(separatedBy: "://").first else {
+                    print("StravaClient: Invalid redirectUri in config - cannot determine callback scheme.")
+                    continuation.resume(throwing: StravaClientError.invalidRedirectURI)
+                    return
+                }
+                
+                print("StravaClient: Initiating ASWebAuthenticationSession with URL: \(Router.webAuthorizationUrl) and callback scheme: \(callbackScheme)")
+                
+                let webAuthenticationSession = ASWebAuthenticationSession(
+                    url: Router.webAuthorizationUrl,
+                    callbackURLScheme: callbackScheme // Use scheme from config's redirectUri
+                ) { url, error in
+                    if let error = error {
+                        print("StravaClient: ASWebAuthenticationSession failed: \(error)")
+                        // Handle cancellation specifically if needed
+                        if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin {
+                            continuation.resume(throwing: StravaClientError.runtimeError("User cancelled web authentication.")) // Or a specific cancellation error
+                        } else {
+                            continuation.resume(throwing: error)
+                        }
+                    } else if let url = url {
+                        print("StravaClient: ASWebAuthenticationSession succeeded with URL: \(url)")
+                        continuation.resume(returning: url)
+                    } else {
+                        print("StravaClient: ASWebAuthenticationSession returned no URL and no error.")
+                        continuation.resume(throwing: StravaClientError.runtimeError("Web authentication returned an unexpected state."))
+                    }
+                }
+                
+                // Keep reference and set context provider
+                self.authSession = webAuthenticationSession
+                if #available(iOS 13.0, *) {
+                    webAuthenticationSession.presentationContextProvider = self
+                }
+                webAuthenticationSession.start()
+                print("StravaClient: ASWebAuthenticationSession started.")
+            }
+            print("StravaClient: Received redirect URL via web auth session: \(redirectURL?.absoluteString ?? "nil")")
+        }
+        
+        // --- Process Redirect URL ---
+        guard let finalURL = redirectURL else {
+            // This should theoretically only happen if the continuation wasn't resumed (e.g., user cancel not handled cleanly)
+            print("StravaClient: Error - Redirect URL is nil after auth flow.")
+            throw StravaClientError.runtimeError("Authorization flow did not return a URL.")
+        }
+        
+        // Validate the URL structure and extract code/scopes
+        guard redirectURLIsValid(finalURL), // Use existing validation logic
+              let params = finalURL.getQueryParameters(),
+              let code = params["code"]
+        else {
+            // Check for explicit error parameter from Strava
+            if let errorDesc = finalURL.getQueryParameters()?["error"] {
+                print("StravaClient: Authorization failed with error from Strava: \(errorDesc)")
+                throw StravaClientError.runtimeError("Authorization failed: \(errorDesc)")
+            }
+            // Otherwise, it's an invalid redirect or missing code
+            print("StravaClient: Invalid redirect URI or missing code/scope/state.")
+            throw StravaClientError.invalidRedirectURI // Or a more specific error
+        }
+        
+        // Extract scopes
+        let scopes = self.getScopes(from: finalURL) // Use existing helper
+        
+        print("StravaClient: Successfully extracted code: \(code.prefix(4))... and scopes: \(scopes.map { $0.rawValue })")
+        
+        // Return the code and scopes, NOT the token
+        return (code: code, scopes: scopes)
+    }
 
     @MainActor
     public func authorize() async throws -> StravaSwiftAuth {
@@ -176,6 +288,7 @@ extension StravaClient {
     @MainActor
     public func handleAuthURL(_ url: URL) {
         self.authContinuation?.resume(returning: url)
+        self.authContinuation = nil
     }
 
     func getAccessToken(from url: URL) async -> OAuthToken? {

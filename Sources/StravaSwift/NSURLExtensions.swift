@@ -9,7 +9,7 @@
 import Foundation
 
 extension URL {
-    func getQueryParameters() -> Dictionary<String, String>? {
+    public func getQueryParameters() -> Dictionary<String, String>? {
         var results = [String:String]()
         let keyValues = self.query?.components(separatedBy: "&")
         keyValues?.forEach {
