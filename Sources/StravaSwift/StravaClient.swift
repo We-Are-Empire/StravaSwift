@@ -23,13 +23,11 @@ import SafariServices
 
 public struct StravaSwiftAuth: Codable {
 
-    public init(token: OAuthToken, scopes: [Scope]) {
+    public init(token: OAuthToken) {
         self.token = token
-        self.scopes = scopes
     }
 
     public var token: OAuthToken
-    public var scopes: [Scope]
 }
 
 open class StravaClient: NSObject {
@@ -643,7 +641,7 @@ extension StravaClient: ASWebAuthenticationPresentationContextProviding {
         let scopes = self.getScopes(from: authURL)
         
         // Create and store the auth state
-        let auth = StravaSwiftAuth(token: token, scopes: scopes)
+        let auth = StravaSwiftAuth(token: token)
         return auth
     }
     
